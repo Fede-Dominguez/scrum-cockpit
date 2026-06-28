@@ -1,0 +1,75 @@
+===========================================
+  SCRUM COCKPIT  -  Version portable
+===========================================
+
+Que es:
+  App de escritorio que muestra en una sola pantalla la actividad de un
+  proyecto de Azure DevOps:
+    - Feed de actividad en vivo ("Fulano paso la US 28173 a Mengano")
+    - Board con todas las US / BUG / TASK en columnas
+    - Metricas (carga por persona, estados, story points)
+    - Filtros y busqueda
+
+
+-------------------------------------------
+  COMO USARLA
+-------------------------------------------
+
+1) Doble clic en  ScrumCockpit.exe
+   (No necesita instalacion. Se puede correr desde una carpeta, un
+    pendrive, el escritorio, donde sea.)
+
+0) IMPORTANTE: antes de abrir la app, configura el token (PAT) en una
+   variable de entorno (ver mas abajo). Por seguridad, la app NO guarda el
+   token y SOLO lo lee de ahi.
+
+1b) La primera vez te pide:
+     - Organizacion : el nombre que aparece en dev.azure.com/TU-ORG
+     - Proyecto     : el nombre exacto del proyecto
+     - Equipo       : (opcional, solo para metricas de sprint)
+     - Intervalo    : cada cuantos segundos busca cambios (default 30)
+     - Ultimos dias : ventana de fecha. Solo trae actividad de los ultimos
+                      N dias (default 60 = ~2 meses), para no arrastrar
+                      sprints/versiones viejas. Subilo si necesitas mas.
+
+3) Apreta "Probar conexion" y, si dice OK, "Guardar y entrar".
+
+
+-------------------------------------------
+  EL TOKEN (PAT) DE AZURE DEVOPS
+-------------------------------------------
+
+Se genera una sola vez en Azure DevOps:
+   User settings (arriba a la derecha) -> Personal access tokens -> New Token
+   Permisos minimos:  Work Items (Read)  y  Project and Team (Read)
+
+Por seguridad, el token se usa SOLO por variable de entorno (nunca se guarda
+en disco ni se pega en la app). Abri una consola (cmd) y corre:
+
+    setx AZURE_DEVOPS_EXT_PAT "tu-token-aca"
+
+Cerra y volve a abrir la app. Va a tomar el token solo.
+
+
+-------------------------------------------
+  REQUISITOS
+-------------------------------------------
+
+  - Windows 10 u 11 (64 bits).
+  - Microsoft Edge WebView2: viene incluido en Windows 11 y en casi todos
+    los Windows 10 actualizados. Si la ventana de la app aparece en blanco,
+    instala el "Evergreen WebView2 Runtime" (gratis, de Microsoft):
+        https://developer.microsoft.com/microsoft-edge/webview2/
+
+
+-------------------------------------------
+  NOTAS
+-------------------------------------------
+
+  - El token NUNCA se guarda: se lee solo de la variable de entorno.
+    La configuracion (org, proyecto, etc.) se guarda SOLO en esta PC
+    (en la carpeta del usuario, AppData). No se manda nada a ningun
+    servidor externo: la app habla directo con Azure DevOps.
+
+  - Para cambiar la configuracion mas tarde: boton de engranaje (arriba a
+    la derecha) dentro de la app.
