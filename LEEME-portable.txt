@@ -3,11 +3,13 @@
 ===========================================
 
 Que es:
-  App de escritorio que muestra en una sola pantalla la actividad de un
-  proyecto de Azure DevOps:
+  App de escritorio que muestra en una sola pantalla la actividad de uno o
+  varios proyectos de Azure DevOps:
     - Feed de actividad en vivo ("Fulano paso la US 28173 a Mengano")
     - Board con todas las US / BUG / TASK en columnas
-    - Metricas (carga por persona, estados, story points)
+    - Metricas (carga por persona, estados, puntos y nivel de compromiso)
+    - Evolutivo (tendencias por sprint)
+    - QA (quien cerro cada item, test cases por tester, puntos de regresion)
     - Filtros y busqueda
 
 
@@ -15,24 +17,48 @@ Que es:
   COMO USARLA
 -------------------------------------------
 
-1) Doble clic en  ScrumCockpit.exe
-   (No necesita instalacion. Se puede correr desde una carpeta, un
-    pendrive, el escritorio, donde sea.)
-
-0) IMPORTANTE: antes de abrir la app, configura el token (PAT) en una
+1) IMPORTANTE: antes de abrir la app, configura el token (PAT) en una
    variable de entorno (ver mas abajo). Por seguridad, la app NO guarda el
    token y SOLO lo lee de ahi.
 
-1b) La primera vez te pide:
+2) Doble clic en  ScrumCockpit.exe
+   (No necesita instalacion. Se puede correr desde una carpeta, un
+    pendrive, el escritorio, donde sea.)
+
+3) La primera vez te pide cargar un proyecto:
+     - Nombre       : como lo vas a ver en el selector (ej. "Mobile")
      - Organizacion : el nombre que aparece en dev.azure.com/TU-ORG
      - Proyecto     : el nombre exacto del proyecto
      - Equipo       : (opcional, solo para metricas de sprint)
+     - Variable     : cual de tus variables de entorno tiene el token de
+                      ESTE proyecto (por defecto AZURE_DEVOPS_EXT_PAT)
+
+   Y en "Ajustes generales", para todos los proyectos:
      - Intervalo    : cada cuantos segundos busca cambios (default 30)
      - Ultimos dias : ventana de fecha. Solo trae actividad de los ultimos
                       N dias (default 60 = ~2 meses), para no arrastrar
                       sprints/versiones viejas. Subilo si necesitas mas.
+     - Puntos por talle : como se convierte el campo "Estimacion"
+                      (XS/S/M/L/XL) a puntos.
 
-3) Apreta "Probar conexion" y, si dice OK, "Guardar y entrar".
+4) Apreta "Probar conexion" y, si dice OK, "Guardar proyecto".
+
+
+-------------------------------------------
+  VARIOS PROYECTOS A LA VEZ
+-------------------------------------------
+
+Desde el selector de arriba a la derecha podes agregar mas proyectos y
+elegir cuales ver:
+
+  - Con UNO tildado funciona como un switcher: mismas pestanas, otro
+    proyecto.
+  - Con VARIOS tildados se ven todos juntos en una vista fusionada, y cada
+    item lleva un badge de color con el proyecto del que viene.
+
+Cada proyecto puede usar SU PROPIO token, asi que podes mezclar
+organizaciones distintas. Solo tenes que definir una variable de entorno
+por token (ver abajo) e indicar cual usa cada uno.
 
 
 -------------------------------------------
@@ -48,7 +74,45 @@ en disco ni se pega en la app). Abri una consola (cmd) y corre:
 
     setx AZURE_DEVOPS_EXT_PAT "tu-token-aca"
 
-Cerra y volve a abrir la app. Va a tomar el token solo.
+Si tenes varios proyectos con tokens distintos, defini una variable por
+token. El nombre tiene que estar en MAYUSCULAS y terminar en PAT o TOKEN:
+
+    setx SCRUM_COCKPIT_PAT_MOBILE "token-de-la-organizacion-A"
+    setx SCRUM_COCKPIT_PAT_WEB    "token-de-la-organizacion-B"
+
+Cerra y volve a abrir la app. Va a tomar los tokens sola.
+
+
+-------------------------------------------
+  COMO SE CUENTAN LOS PUNTOS
+-------------------------------------------
+
+Cada item aporta SUS Story Points. Si ese campo esta vacio, se usa el campo
+"Estimacion" (talle XS/S/M/L/XL) convertido con la tabla de Ajustes
+generales. Nunca se cuentan los dos campos para el mismo item, asi que no
+hay doble conteo.
+
+Si en tus items aparece un talle que no esta en la tabla, Configuracion te
+lo marca en amarillo: hasta que le pongas un valor, esas US suman 0.
+
+
+-------------------------------------------
+  LA PESTANA QA
+-------------------------------------------
+
+Se trabaja sobre UN sprint por vez (selector arriba a la izquierda):
+
+  - Items cerrados: agrupados por quien los cerro (campo "Closed By").
+    Ojo: Azure DevOps solo completa ese campo en el estado Closed.
+  - Test Cases sin tag "Regresion": cuantos tiene asignados cada tester
+    en ese sprint.
+  - Regresion: suma los puntos de los Test Cases que tengan el tag
+    "Regresion" MAS el tag del sprint (ej. "5.26.05"). El tag se completa
+    solo con el nombre del sprint, pero se puede corregir a mano si tu
+    equipo etiqueta distinto.
+
+Si faltan test cases de regresion, suele ser porque quedaron fuera de la
+ventana de "Ultimos dias": subila y volve a mirar.
 
 
 -------------------------------------------
@@ -66,10 +130,11 @@ Cerra y volve a abrir la app. Va a tomar el token solo.
   NOTAS
 -------------------------------------------
 
-  - El token NUNCA se guarda: se lee solo de la variable de entorno.
-    La configuracion (org, proyecto, etc.) se guarda SOLO en esta PC
+  - Los tokens NUNCA se guardan: se leen solo de las variables de entorno.
+    La configuracion (proyectos, org, ajustes) se guarda SOLO en esta PC
     (en la carpeta del usuario, AppData). No se manda nada a ningun
     servidor externo: la app habla directo con Azure DevOps.
 
   - Para cambiar la configuracion mas tarde: boton de engranaje (arriba a
-    la derecha) dentro de la app.
+    la derecha) dentro de la app, o "Agregar / administrar proyectos" en el
+    selector de proyectos.
