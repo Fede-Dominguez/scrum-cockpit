@@ -89,8 +89,23 @@ Tauri 2 · React 19 · TypeScript · Vite · Tailwind 4 · Zustand · Tauri plug
 Requirements: Node, Rust/Cargo and, on Linux, `webkit2gtk-4.1`, `libsoup-3.0`, `gtk+-3.0`.
 
 ```bash
+./run-dev.sh           # launcher: checks the toolchain, reports visible tokens, starts the app
+./run-dev.sh --check   # diagnostics only, does not start anything
+```
+
+Or by hand:
+
+```bash
 npm install
-npm run tauri dev      # run the app in development mode
+npm run tauri dev
+```
+
+If you juggle several projects with different tokens, drop them in a `.env.local`
+at the repo root (already git-ignored) and the launcher picks them up:
+
+```bash
+export AZURE_DEVOPS_EXT_PAT="token-for-org-A"
+export SCRUM_COCKPIT_PAT_MOBILE="token-for-org-B"
 ```
 
 ## 📦 Build

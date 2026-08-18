@@ -4,15 +4,55 @@ const DEFAULT_PAT_VARS: [&str; 3] = ["AZURE_DEVOPS_EXT_PAT", "AZURE_DEVOPS_PAT",
 
 /// `true` si el nombre puede contener un token de Azure DevOps.
 ///
-/// Sólo dejamos leer variables cuyo nombre parece de credencial (PAT/TOKEN).
-/// Sin este filtro el frontend podría pedir cualquier variable del proceso.
+/// Sólo dejamos leer variables cuyo nombre parece de credencial. Sin este
+/// filtro el frontend podría pedir cualquier variable del proceso.
+///
+/// El criterio es por segmento (separado por `_`) y no por substring: un
+/// `contains("PAT")` dejaría pasar `PATH`, `XDG_SESSION_PATH` y compañía.
+/// `AZURE_DEVOPS_EXT_PAT` y `SCRUM_COCKPIT_PAT_MOBILE` pasan; `PATH` no.
 fn is_allowed_pat_var(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 128
         && name
             .chars()
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-        && (name.contains("PAT") || name.contains("TOKEN"))
+        && name
+            .split('_')
+            .any(|seg| seg.ends_with("PAT") || seg.ends_with("TOKEN"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_allowed_pat_var;
+
+    #[test]
+    fn accepts_credential_looking_names() {
+        for name in [
+            "AZURE_DEVOPS_EXT_PAT",
+            "AZURE_DEVOPS_PAT",
+            "SCRUM_COCKPIT_PAT",
+            "SCRUM_COCKPIT_PAT_MOBILE",
+            "GITHUB_TOKEN",
+            "MYPAT",
+        ] {
+            assert!(is_allowed_pat_var(name), "deberia aceptar {name}");
+        }
+    }
+
+    #[test]
+    fn rejects_everything_else() {
+        for name in [
+            "PATH",              // el caso peligroso: contiene "PAT"
+            "XDG_SESSION_PATH",
+            "QS_CONFIG_PATH",
+            "HOME",
+            "",
+            "path_pat",          // minusculas
+            "AZURE-DEVOPS-PAT",  // guiones
+        ] {
+            assert!(!is_allowed_pat_var(name), "deberia rechazar {name}");
+        }
+    }
 }
 
 /// Lee el PAT desde una variable de entorno concreta (la que declara el proyecto).
