@@ -5,8 +5,11 @@
 # Requisitos (una sola vez):
 #   - rustup + target:  rustup target add x86_64-pc-windows-msvc
 #   - cargo-xwin:       cargo install --locked cargo-xwin
-#   - LLVM (clang-cl, lld-link)   [ya presente en este equipo]
-#   - 7z (para el .zip)           [ya presente en este equipo]
+#   - LLVM:  clang-cl + llvm-lib (paquete `llvm`) Y lld-link (paquete `lld`)
+#            OJO: `lld` es un paquete aparte de `llvm` y se cae en updates del
+#            sistema. Si el link falla, chequear `command -v lld-link`.
+#            En Arch:  sudo pacman -S --needed llvm clang lld
+#   - 7z (para el .zip)
 #
 # Uso:  ./build-windows.sh
 set -euo pipefail
