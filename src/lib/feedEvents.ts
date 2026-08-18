@@ -19,6 +19,7 @@ function fieldStr(value: unknown): string | undefined {
  * Genera frases como "Ana pasó la US 28173 a Bruno".
  */
 export function updatesToEvents(
+  projectId: string,
   workItemId: number,
   type: string,
   title: string,
@@ -33,14 +34,14 @@ export function updatesToEvents(
     const ts =
       fieldStr(fields["System.ChangedDate"]?.newValue) ?? u.revisedDate ?? new Date().toISOString();
 
-    const base = { workItemId, workItemType: type, title, actor, timestamp: ts };
+    const base = { projectId, workItemId, workItemType: type, title, actor, timestamp: ts };
 
     // Alta del work item (primera revisión)
     if (u.rev === 1) {
       const assignee = fieldStr(fields["System.AssignedTo"]?.newValue);
       events.push({
         ...base,
-        id: `${workItemId}-${u.rev}-created`,
+        id: `${projectId}-${workItemId}-${u.rev}-created`,
         kind: "created",
         text: assignee
           ? `Nueva ${t} ${workItemId} cargada a ${assignee}`
@@ -56,7 +57,7 @@ export function updatesToEvents(
     if (assignField && to !== from) {
       events.push({
         ...base,
-        id: `${workItemId}-${u.rev}-assigned`,
+        id: `${projectId}-${workItemId}-${u.rev}-assigned`,
         kind: "assigned",
         field: "System.AssignedTo",
         oldValue: from,
@@ -75,7 +76,7 @@ export function updatesToEvents(
       if (n && n !== o) {
         events.push({
           ...base,
-          id: `${workItemId}-${u.rev}-column`,
+          id: `${projectId}-${workItemId}-${u.rev}-column`,
           kind: "column",
           field: "System.BoardColumn",
           oldValue: o,
@@ -95,7 +96,7 @@ export function updatesToEvents(
       if (n && n !== o) {
         events.push({
           ...base,
-          id: `${workItemId}-${u.rev}-state`,
+          id: `${projectId}-${workItemId}-${u.rev}-state`,
           kind: "state",
           field: "System.State",
           oldValue: o,

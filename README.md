@@ -2,7 +2,7 @@
 
 **🇬🇧 English** · [🇪🇸 Español](README.es.md)
 
-A **desktop app for Scrum Masters** that shows, on a single screen, all the activity of an **Azure DevOps** (cloud) project — built to be used without technical knowledge. No server, no database: everything runs locally on your machine.
+A **desktop app for Scrum Masters** that shows, on a single screen, all the activity of one or more **Azure DevOps** (cloud) projects — built to be used without technical knowledge. No server, no database: everything runs locally on your machine.
 
 > Cross-platform desktop app built with **Tauri 2 + React + TypeScript**, talking directly to the Azure DevOps REST API.
 
@@ -10,15 +10,18 @@ A **desktop app for Scrum Masters** that shows, on a single screen, all the acti
 
 - **📡 Activity feed** — a live, natural-language stream of what's happening (e.g. _"Ana moved US 28173 to Bruno"_, _"New US assigned to Ana"_).
 - **🗂️ Board** — every User Story / Bug / Task in columns (by board column, state or person).
-- **📊 Metrics** — WIP, completed items, story points, workload per person and distribution by state.
+- **📊 Metrics** — WIP, completed items, points, workload per person and a **breakdown by commitment level** (Mandatory / Committed / Desirable): how many stories and how many points are left at each level.
 - **📈 Evolution** — trends over the selected time window.
-- **🔎 Filters & search** — by type, person, sprint and free text.
+- **🧪 QA** — per sprint: who closed each item (`Closed By`), test cases per tester and regression points.
+- **🗂️ Multi-project** — several projects configured at once, **each with its own token**. View them one at a time (like a switcher) or all together in a merged view.
+- **🔎 Filters & search** — by type, person, sprint, commitment and free text.
 
 ## 🔒 Security & privacy
 
 This tool was built to be shared with the community, so it follows a few principles:
 
-- **The Personal Access Token (PAT) is read *only* from an environment variable** and is **never written to disk** nor typed into the UI.
+- **Personal Access Tokens (PATs) are read *only* from environment variables** and are **never written to disk** nor typed into the UI. Each project declares *which* variable it uses, so you can connect different organizations with different tokens.
+- The frontend **cannot read arbitrary environment variables**: the native layer only returns variables whose name contains `PAT` or `TOKEN`.
 - All traffic stays between your machine and Azure DevOps — **nothing is sent to any third-party server**.
 - The HTTP layer is **allow-listed** to Azure DevOps domains only (`dev.azure.com`, `*.dev.azure.com`, `app.vssps.visualstudio.com`).
 - A restrictive **Content-Security-Policy** is enforced in the web view.
@@ -31,7 +34,7 @@ Azure DevOps → *User settings* → *Personal access tokens*. Minimum scopes:
 📖 [How to create a PAT](https://learn.microsoft.com/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate)
 
 ### 2. Expose it as an environment variable
-The app looks for the token in these variables (in order): `AZURE_DEVOPS_EXT_PAT` (the same one the Azure DevOps CLI uses), `AZURE_DEVOPS_PAT`, `SCRUM_COCKPIT_PAT`.
+By default the app looks for the token in `AZURE_DEVOPS_EXT_PAT` (the same one the Azure DevOps CLI uses); it also recognises `AZURE_DEVOPS_PAT` and `SCRUM_COCKPIT_PAT`.
 
 ```bash
 # Linux / macOS
@@ -43,15 +46,31 @@ setx AZURE_DEVOPS_EXT_PAT "your-token"
 ```
 > On Windows, reopen the app after setting it.
 
+**Several projects with different tokens?** Define one variable per token and tell the app which one each project uses. The name must contain `PAT` or `TOKEN`:
+
+```powershell
+setx SCRUM_COCKPIT_PAT_MOBILE "token-for-org-A"
+setx SCRUM_COCKPIT_PAT_WEB    "token-for-org-B"
+```
+
 ### 3. First-run setup
-On first launch the app asks for:
+On first launch you add your first project:
+- **Name** — the alias shown in the project switcher (e.g. *Mobile*).
 - **Organization** — the name in `dev.azure.com/YOUR-ORG`.
 - **Project** — the exact project name.
 - **Team** *(optional)* — only needed for sprint metrics.
+- **Token environment variable** — which of your variables holds the PAT for *this* project.
+
+And under **General settings**, shared by every project:
 - **Refresh interval** — how often (seconds) it polls for changes (default 30).
 - **Lookback window** — only activity changed in the last *N* days is loaded (default **60**, ~2 months) to avoid dragging in sprints/versions from years ago. Increase it if you need more history.
+- **Points per size** — how the custom *Estimación* field (XS/S/M/L/XL) converts to points.
 
-Use **Test connection** to validate before saving.
+Use **Test connection** to validate before saving. The switcher in the top bar is where you add more projects and pick which ones to view.
+
+## 🧮 How points are counted
+
+Each item contributes **its own Story Points**; when that field is empty, the custom **Estimación** field (T-shirt size XS/S/M/L/XL) is converted using the table in *General settings*. **The two fields are never counted for the same item**, so nothing is double-counted. Metrics shows how many stories came in via the size route.
 
 ## ⚙️ How it works
 

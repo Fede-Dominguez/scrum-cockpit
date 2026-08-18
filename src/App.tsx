@@ -1,27 +1,35 @@
-import { useEffect, useState } from "react";
-import { resolveConfig, useStore } from "./store/useStore";
-import { startPolling, stopPolling, syncNow } from "./lib/poller";
+import { useEffect, useMemo, useState } from "react";
+import {
+  activeProjects,
+  aggregateStatus,
+  runnableProjects,
+  useStore,
+} from "./store/useStore";
+import { stopPolling, syncNow, syncPollers } from "./lib/poller";
 import { relativeTime } from "./lib/format";
 import { DEFAULT_LOOKBACK_DAYS } from "./types";
+import ProjectSwitcher from "./components/ProjectSwitcher";
 import Setup from "./views/Setup";
 import Board from "./views/Board";
 import Feed from "./views/Feed";
 import Metrics from "./views/Metrics";
 import Evolution from "./views/Evolution";
+import QA from "./views/QA";
 
-type View = "feed" | "board" | "metrics" | "evolution";
+type View = "feed" | "board" | "metrics" | "evolution" | "qa";
 
 const NAV: { id: View; label: string; icon: string }[] = [
   { id: "feed", label: "Actividad", icon: "📡" },
   { id: "board", label: "Board", icon: "🗂️" },
   { id: "metrics", label: "Métricas", icon: "📊" },
   { id: "evolution", label: "Evolutivo", icon: "📈" },
+  { id: "qa", label: "QA", icon: "🧪" },
 ];
 
 export default function App() {
   const configLoaded = useStore((s) => s.configLoaded);
   const config = useStore((s) => s.config);
-  const envPat = useStore((s) => s.envPat);
+  const envPats = useStore((s) => s.envPats);
   const loadPersisted = useStore((s) => s.loadPersisted);
 
   const [view, setView] = useState<View>("feed");
@@ -31,14 +39,25 @@ export default function App() {
     loadPersisted();
   }, [loadPersisted]);
 
-  // Arrancar / detener el poller según haya config (con PAT resuelto desde env si hace falta)
+  // Proyectos activos que además tienen su token disponible.
+  const runnable = useMemo(() => runnableProjects(config, envPats), [config, envPats]);
+
+  // Un ciclo de polling por proyecto activo. syncPollers reconcilia (arranca los
+  // nuevos, para los que se fueron, deja andando los que no cambiaron), así que
+  // NO cortamos todo en el cleanup: eso reiniciaría los ciclos en cada cambio.
   useEffect(() => {
-    const effective = resolveConfig(config, envPat);
-    if (effective && effective.pat && !editingConfig) {
-      startPolling(effective);
-      return () => stopPolling();
+    if (editingConfig) {
+      stopPolling();
+      return;
     }
-  }, [config, envPat, editingConfig]);
+    syncPollers(runnable, {
+      pollIntervalSec: config.pollIntervalSec,
+      lookbackDays: config.lookbackDays,
+    });
+  }, [runnable, config.pollIntervalSec, config.lookbackDays, editingConfig]);
+
+  // Al desmontar la app sí frenamos todo.
+  useEffect(() => stopPolling, []);
 
   if (!configLoaded) {
     return (
@@ -46,9 +65,10 @@ export default function App() {
     );
   }
 
-  // Sin token en la variable de entorno no se puede operar: mostramos el Setup,
-  // que explica cómo configurarla. El PAT nunca se pide ni se guarda en disco.
-  if (!config || editingConfig || !envPat) {
+  // Sin proyectos configurados (o ninguno con token) no hay nada que mostrar:
+  // el Setup explica cómo definir la variable de entorno de cada uno.
+  const anyToken = config.projects.some((p) => envPats[p.patEnvVar]);
+  if (config.projects.length === 0 || editingConfig || !anyToken) {
     return <Setup onDone={() => setEditingConfig(false)} />;
   }
 
@@ -60,6 +80,7 @@ export default function App() {
         {view === "board" && <Board />}
         {view === "metrics" && <Metrics />}
         {view === "evolution" && <Evolution />}
+        {view === "qa" && <QA />}
       </div>
       <StatusBar />
     </div>
@@ -75,7 +96,6 @@ function TopBar({
   onView: (v: View) => void;
   onSettings: () => void;
 }) {
-  const config = useStore((s) => s.config);
   return (
     <div className="flex items-center gap-1 px-3 py-2 border-b border-slate-800 bg-slate-900">
       <span className="font-bold text-white mr-3 select-none">Scrum Cockpit</span>
@@ -95,9 +115,7 @@ function TopBar({
       ))}
       <div className="ml-auto flex items-center gap-3">
         <LookbackSelect />
-        <span className="text-xs text-slate-500">
-          {config?.org}/{config?.project}
-        </span>
+        <ProjectSwitcher onManage={onSettings} />
         <button
           onClick={onSettings}
           className="text-slate-400 hover:text-slate-200 text-sm"
@@ -122,24 +140,25 @@ const LOOKBACK_PRESETS = [
 
 /** Selector "traer sprints de los últimos N meses" en la barra superior. */
 function LookbackSelect() {
-  const config = useStore((s) => s.config);
-  const saveConfig = useStore((s) => s.saveConfig);
-  const status = useStore((s) => s.status);
-  const current = config?.lookbackDays ?? DEFAULT_LOOKBACK_DAYS;
+  const lookbackDays = useStore((s) => s.config.lookbackDays);
+  const setGlobalSettings = useStore((s) => s.setGlobalSettings);
+  const sync = useStore((s) => s.sync);
+  const syncing = Object.values(sync).some((s) => s.status === "syncing");
+  const current = lookbackDays ?? DEFAULT_LOOKBACK_DAYS;
   // Si el valor guardado no coincide con un preset, lo mostramos igual (≈ meses).
   const isPreset = LOOKBACK_PRESETS.some((p) => p.days === current);
 
   return (
-    <label className="flex items-center gap-1 text-xs text-slate-500" title="Cuántos meses de actividad traer (afecta todas las pestañas)">
+    <label
+      className="flex items-center gap-1 text-xs text-slate-500"
+      title="Cuántos meses de actividad traer (afecta todas las pestañas y todos los proyectos)"
+    >
       <span>Últimos</span>
       <select
         className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-100 outline-none focus:border-sky-500 disabled:opacity-50"
         value={current}
-        disabled={!config || status === "syncing"}
-        onChange={(e) => {
-          if (!config) return;
-          void saveConfig({ ...config, lookbackDays: Number(e.target.value) });
-        }}
+        disabled={syncing}
+        onChange={(e) => void setGlobalSettings({ lookbackDays: Number(e.target.value) })}
       >
         {!isPreset && <option value={current}>≈{Math.round(current / 30)} meses</option>}
         {LOOKBACK_PRESETS.map((p) => (
@@ -153,12 +172,29 @@ function LookbackSelect() {
 }
 
 function StatusBar() {
-  const status = useStore((s) => s.status);
-  const lastSync = useStore((s) => s.lastSync);
-  const error = useStore((s) => s.error);
   const config = useStore((s) => s.config);
-  const envPat = useStore((s) => s.envPat);
+  const envPats = useStore((s) => s.envPats);
+  const sync = useStore((s) => s.sync);
   const itemCount = useStore((s) => Object.keys(s.items).length);
+
+  const active = useMemo(() => activeProjects(config), [config]);
+  const activeIds = active.map((p) => p.id);
+  const status = aggregateStatus(sync, activeIds);
+
+  // El sync más reciente entre los proyectos visibles.
+  const lastSync = activeIds
+    .map((id) => sync[id]?.lastSync)
+    .filter((x): x is string => Boolean(x))
+    .sort()
+    .pop();
+
+  // Errores por proyecto: se muestran juntos y con el nombre delante, así se
+  // sabe cuál de los proyectos está fallando.
+  const errors = active
+    .map((p) => (sync[p.id]?.error ? `${p.label}: ${sync[p.id]!.error}` : null))
+    .filter((x): x is string => Boolean(x));
+
+  const missingToken = active.filter((p) => !envPats[p.patEnvVar]);
 
   const dot =
     status === "error"
@@ -181,17 +217,24 @@ function StatusBar() {
       <span className={`w-2 h-2 rounded-full ${dot}`} />
       <span className="text-slate-400">{label}</span>
       <span className="text-slate-600">·</span>
-      <span className="text-slate-500">{itemCount} items</span>
-      {error && (
-        <span className="text-red-400 truncate max-w-md" title={error}>
-          {error}
+      <span className="text-slate-500">
+        {itemCount} items · {active.length} proyecto{active.length === 1 ? "" : "s"}
+      </span>
+      {missingToken.length > 0 && (
+        <span
+          className="text-amber-300 truncate"
+          title={missingToken.map((p) => `${p.label}: falta ${p.patEnvVar}`).join("\n")}
+        >
+          ⚠ {missingToken.length} sin token
+        </span>
+      )}
+      {errors.length > 0 && (
+        <span className="text-red-400 truncate max-w-md" title={errors.join("\n")}>
+          {errors[0]}
         </span>
       )}
       <button
-        onClick={() => {
-          const eff = resolveConfig(config, envPat);
-          if (eff && eff.pat) syncNow(eff);
-        }}
+        onClick={() => void syncNow()}
         className="ml-auto text-slate-400 hover:text-slate-200"
         disabled={status === "syncing"}
       >

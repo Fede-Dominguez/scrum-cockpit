@@ -1,8 +1,8 @@
 // Cálculo de Lead/Cycle Time a partir del historial de estados de un work item.
 // El historial se trae on-demand (1 request por item, cacheado en sesión) porque
 // es pesado y sólo hace falta cuando se abre el panel de Lead Time del Evolutivo.
-import { getWorkItemUpdates, type WorkItemUpdate } from "./azureDevOps";
-import type { AzureConfig, WorkItem } from "../types";
+import { getWorkItemUpdates, type QueryConfig, type WorkItemUpdate } from "./azureDevOps";
+import { itemKey, type WorkItem } from "../types";
 
 /** Estado inicial especial: la creación del item (usa System.CreatedDate). */
 export const CREATED_SENTINEL = "__created__";
@@ -76,30 +76,35 @@ export function leadTimeDays(
   return (endMs - startMs) / 86400000;
 }
 
-const timelineCache = new Map<number, StateChange[]>();
+// Cacheado por `${projectId}#${id}`: los ids de ADO se repiten entre organizaciones.
+const timelineCache = new Map<string, StateChange[]>();
 
 /**
  * Trae (secuencialmente, con caché de sesión) la línea de tiempo de estados de
- * cada item. `onProgress(done, total)` permite mostrar avance en la UI.
+ * cada item, agrupando por proyecto para usar el token que corresponde a cada
+ * uno. `onProgress(done, total)` permite mostrar avance en la UI.
  */
 export async function fetchTimelines(
-  cfg: AzureConfig,
+  configs: QueryConfig[],
   items: WorkItem[],
   onProgress?: (done: number, total: number) => void,
-): Promise<Map<number, StateChange[]>> {
-  const result = new Map<number, StateChange[]>();
+): Promise<Map<string, StateChange[]>> {
+  const byProject = new Map(configs.map((c) => [c.id, c]));
+  const result = new Map<string, StateChange[]>();
   let done = 0;
   for (const it of items) {
-    let timeline = timelineCache.get(it.id);
+    const key = itemKey(it.projectId, it.id);
+    let timeline = timelineCache.get(key);
     if (!timeline) {
+      const cfg = byProject.get(it.projectId);
       try {
-        timeline = stateTimeline(await getWorkItemUpdates(cfg, it.id));
+        timeline = cfg ? stateTimeline(await getWorkItemUpdates(cfg, it.id)) : [];
       } catch {
         timeline = [];
       }
-      timelineCache.set(it.id, timeline);
+      timelineCache.set(key, timeline);
     }
-    result.set(it.id, timeline);
+    result.set(key, timeline);
     onProgress?.(++done, items.length);
   }
   return result;

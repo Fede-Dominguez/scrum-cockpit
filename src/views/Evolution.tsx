@@ -1,16 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { resolveConfig, useStore } from "../store/useStore";
+import { resolveProject, useStore } from "../store/useStore";
 import { useFilters } from "../store/useFilters";
-import { applyFilters } from "../lib/selectors";
-import { useWindowedItems } from "../lib/useWindowedItems";
+import { applyFilters, sprintName } from "../lib/selectors";
 import { lastPathSegment } from "../lib/format";
-import type { WorkItem } from "../types";
+import { useSizePoints, useWindowedItems } from "../lib/useWindowedItems";
+import { itemPoints } from "../lib/points";
+import { itemKey, type WorkItem } from "../types";
 import { Avatar } from "../components/common";
 import FilterBar from "../components/FilterBar";
 import MultiSelect from "../components/MultiSelect";
 import { TRACKED_TYPES } from "../lib/azureDevOps";
 import { ItemRow } from "./Metrics";
-import { countBy, isBug, isDone, priorityLabel, sumPoints } from "../lib/workItemStatus";
+import {
+  commitmentLevel,
+  commitmentRank,
+  countBy,
+  isBug,
+  isDone,
+  priorityLabel,
+  sumPoints,
+} from "../lib/workItemStatus";
 import {
   CREATED_LABEL,
   CREATED_SENTINEL,
@@ -21,16 +30,10 @@ import {
 
 const SIN_SPRINT = "(sin sprint)";
 
-// Orden lógico del campo Compromiso (lo demás va al final, por cantidad).
-const COMMITMENT_ORDER = ["mandatorio", "comprometido", "deseable"];
-const commitmentRank = (v: string) => {
-  const i = COMMITMENT_ORDER.indexOf(v.trim().toLowerCase());
-  return i === -1 ? COMMITMENT_ORDER.length : i;
-};
-
 interface SprintBucket {
-  path: string; // iterationPath (clave) o SIN_SPRINT
-  label: string; // último segmento
+  /** Nombre del sprint (último segmento del path) o SIN_SPRINT; es la clave */
+  path: string;
+  label: string;
   startDate?: string;
   items: WorkItem[];
   totalPoints: number;
@@ -42,28 +45,40 @@ interface SprintBucket {
 
 export default function Evolution() {
   const windowed = useWindowedItems();
-  const iterations = useStore((s) => s.iterations);
+  const iterationsByProject = useStore((s) => s.iterations);
   const filters = useFilters();
+  const sizePoints = useSizePoints();
 
   const items = useMemo(() => applyFilters(windowed, filters), [windowed, filters]);
 
-  // Sprint ACTUAL según ADO (timeFrame "current"), no el más reciente por fecha.
-  const currentPath = useMemo(
-    () => iterations.find((it) => it.attributes?.timeFrame === "current")?.path,
-    [iterations],
+  // Iteraciones de todos los proyectos activos, aplanadas.
+  const iterations = useMemo(
+    () => Object.values(iterationsByProject).flat(),
+    [iterationsByProject],
   );
 
-  // path -> startDate (para ordenar sprints cronológicamente)
+  // Sprint ACTUAL según ADO (timeFrame "current"), no el más reciente por fecha.
+  const currentPath = useMemo(() => {
+    const it = iterations.find((i) => i.attributes?.timeFrame === "current");
+    return it ? lastPathSegment(it.path) : undefined;
+  }, [iterations]);
+
+  // nombre de sprint -> startDate (para ordenar sprints cronológicamente)
   const startDates = useMemo(() => {
     const m = new Map<string, string>();
-    for (const it of iterations) if (it.attributes?.startDate) m.set(it.path, it.attributes.startDate);
+    for (const it of iterations) {
+      const start = it.attributes?.startDate;
+      const name = lastPathSegment(it.path);
+      // Si dos proyectos comparten nombre de sprint, gana la fecha más temprana.
+      if (start && (!m.has(name) || start < m.get(name)!)) m.set(name, start);
+    }
     return m;
   }, [iterations]);
 
   const sprints = useMemo<SprintBucket[]>(() => {
     const groups = new Map<string, WorkItem[]>();
     for (const it of items) {
-      const key = it.iterationPath || SIN_SPRINT;
+      const key = sprintName(it) || SIN_SPRINT;
       const arr = groups.get(key);
       if (arr) arr.push(it);
       else groups.set(key, [it]);
@@ -72,11 +87,11 @@ export default function Evolution() {
       const bugs = list.filter((i) => i.type === "Bug");
       return {
         path,
-        label: path === SIN_SPRINT ? SIN_SPRINT : lastPathSegment(path),
+        label: path,
         startDate: startDates.get(path),
         items: list,
-        totalPoints: sumPoints(list),
-        donePoints: sumPoints(list.filter(isDone)),
+        totalPoints: sumPoints(list, sizePoints),
+        donePoints: sumPoints(list.filter(isDone), sizePoints),
         bugsTotal: bugs.length,
         bugsDone: bugs.filter(isDone).length,
         usCount: list.filter((i) => i.type === "User Story").length,
@@ -89,7 +104,7 @@ export default function Evolution() {
       if (b.startDate) return 1;
       return b.label.localeCompare(a.label);
     });
-  }, [items, startDates]);
+  }, [items, startDates, sizePoints]);
 
   return (
     <div className="flex flex-col h-full">
@@ -188,6 +203,7 @@ function SprintBarChart({
 }
 
 function SprintCard({ sprint }: { sprint: SprintBucket }) {
+  const sizePoints = useSizePoints();
   const [open, setOpen] = useState(false);
   const pct = sprint.totalPoints
     ? Math.round((sprint.donePoints / sprint.totalPoints) * 100)
@@ -199,13 +215,14 @@ function SprintCard({ sprint }: { sprint: SprintBucket }) {
     for (const it of sprint.items) {
       const name = it.assignedTo || "Sin asignar";
       const cur = m.get(name) ?? { points: 0, count: 0, bugsDone: 0 };
-      cur.points += it.storyPoints ?? 0;
+      cur.points += itemPoints(it, sizePoints);
       cur.count += 1;
       if (isBug(it) && isDone(it)) cur.bugsDone += 1;
       m.set(name, cur);
     }
+    for (const v of m.values()) v.points = Math.round(v.points * 100) / 100;
     return [...m.entries()].sort((a, b) => b[1].points - a[1].points || b[1].count - a[1].count);
-  }, [sprint]);
+  }, [sprint, sizePoints]);
 
   const byPriority = useMemo(
     () =>
@@ -219,7 +236,7 @@ function SprintCard({ sprint }: { sprint: SprintBucket }) {
       [
         ...countBy(
           sprint.items.filter((it) => it.commitment),
-          (it) => it.commitment as string,
+          (it) => commitmentLevel(it.commitment),
         ).entries(),
       ].sort((a, b) => commitmentRank(a[0]) - commitmentRank(b[0]) || b[1] - a[1]),
     [sprint],
@@ -298,9 +315,9 @@ function SprintCard({ sprint }: { sprint: SprintBucket }) {
             <h4 className="text-xs font-semibold text-slate-400 mb-2">Items del sprint</h4>
             <div className="max-h-60 overflow-y-auto space-y-1">
               {[...sprint.items]
-                .sort((a, b) => (b.storyPoints ?? 0) - (a.storyPoints ?? 0))
+                .sort((a, b) => itemPoints(b, sizePoints) - itemPoints(a, sizePoints))
                 .map((it) => (
-                  <ItemRow key={it.id} item={it} />
+                  <ItemRow key={itemKey(it.projectId, it.id)} item={it} />
                 ))}
             </div>
           </div>
@@ -397,6 +414,7 @@ type PersonMetric = "points" | "bugs";
 /** Matriz persona × sprint: puntos hechos o bugs resueltos por persona, por sprint. */
 function PersonSprintMatrix({ sprints }: { sprints: SprintBucket[] }) {
   const [metric, setMetric] = useState<PersonMetric>("points");
+  const sizePoints = useSizePoints();
   // Todos los sprints filtrados (la ventana de meses ya acota la cantidad);
   // scroll horizontal si hay muchos. Así Total y Promedio cuadran con lo visible.
   const cols = sprints;
@@ -413,7 +431,7 @@ function PersonSprintMatrix({ sprints }: { sprints: SprintBucket[] }) {
         const v =
           metric === "points"
             ? isDone(it)
-              ? it.storyPoints ?? 0
+              ? itemPoints(it, sizePoints)
               : 0
             : isBug(it) && isDone(it)
               ? 1
@@ -427,7 +445,7 @@ function PersonSprintMatrix({ sprints }: { sprints: SprintBucket[] }) {
     }
     const people = [...map.keys()].sort((a, b) => (tot.get(b) ?? 0) - (tot.get(a) ?? 0));
     return { persons: people, values: map, totals: tot };
-  }, [cols, metric]);
+  }, [cols, metric, sizePoints]);
 
   const max = Math.max(1, ...persons.map((p) => totals.get(p) ?? 0));
 
@@ -604,12 +622,23 @@ const fmtDays = (d: number) => (d < 1 ? `${Math.round(d * 24)} h` : `${d.toFixed
  */
 function LeadTimePanel({ items }: { items: WorkItem[] }) {
   const config = useStore((s) => s.config);
-  const envPat = useStore((s) => s.envPat);
+  const envPats = useStore((s) => s.envPats);
+
+  // El historial se pide con el token de cada proyecto, así funciona también
+  // con dos organizaciones abiertas a la vez.
+  const configs = useMemo(
+    () =>
+      config.projects
+        .map((p) => resolveProject(p, envPats))
+        .filter((p): p is NonNullable<typeof p> => p !== null)
+        .map((p) => ({ ...p, lookbackDays: config.lookbackDays })),
+    [config.projects, config.lookbackDays, envPats],
+  );
 
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
-  const [timelines, setTimelines] = useState<Map<number, StateChange[]> | null>(null);
+  const [timelines, setTimelines] = useState<Map<string, StateChange[]> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [from, setFrom] = useState(CREATED_SENTINEL);
   const [to, setTo] = useState<string[]>([]); // estados finales (multiselección)
@@ -619,8 +648,7 @@ function LeadTimePanel({ items }: { items: WorkItem[] }) {
   // Al abrir por primera vez, traer los historiales de los items filtrados.
   useEffect(() => {
     if (!open || fetchedRef.current) return;
-    const eff = resolveConfig(config, envPat);
-    if (!eff || !eff.pat) {
+    if (configs.length === 0) {
       setError("No hay conexión configurada.");
       return;
     }
@@ -628,11 +656,11 @@ function LeadTimePanel({ items }: { items: WorkItem[] }) {
     setLoading(true);
     setError(null);
     setProgress({ done: 0, total: items.length });
-    fetchTimelines(eff, items, (done, total) => setProgress({ done, total }))
+    fetchTimelines(configs, items, (done, total) => setProgress({ done, total }))
       .then(setTimelines)
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
-  }, [open, config, envPat, items]);
+  }, [open, configs, items]);
 
   // Estados observados en los historiales (para poblar los selectores).
   const states = useMemo(() => {
@@ -656,7 +684,7 @@ function LeadTimePanel({ items }: { items: WorkItem[] }) {
     const rows: { item: WorkItem; days: number }[] = [];
     for (const it of items) {
       if (typeSet && !typeSet.has(it.type)) continue;
-      const tl = timelines.get(it.id);
+      const tl = timelines.get(itemKey(it.projectId, it.id));
       if (!tl) continue;
       const d = leadTimeDays(tl, it.createdDate, from, to);
       if (d != null && d >= 0) rows.push({ item: it, days: d });
@@ -666,7 +694,7 @@ function LeadTimePanel({ items }: { items: WorkItem[] }) {
     // Promedio de lead time por sprint (agrupando los items que hicieron la transición).
     const bySprintMap = new Map<string, number[]>();
     for (const { item, days: d } of rows) {
-      const label = item.iterationPath ? lastPathSegment(item.iterationPath) : SIN_SPRINT;
+      const label = sprintName(item) || SIN_SPRINT;
       const arr = bySprintMap.get(label);
       if (arr) arr.push(d);
       else bySprintMap.set(label, [d]);

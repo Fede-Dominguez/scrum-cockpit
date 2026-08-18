@@ -2,22 +2,46 @@ import { useMemo } from "react";
 import { UNASSIGNED, useFilters } from "../store/useFilters";
 import { uniqueAssignees, uniqueIterations } from "../lib/selectors";
 import { useWindowedItems } from "../lib/useWindowedItems";
-import { lastPathSegment } from "../lib/format";
+import { uniqueCommitments } from "../lib/workItemStatus";
 import { TRACKED_TYPES } from "../lib/azureDevOps";
 import MultiSelect from "./MultiSelect";
 
 export default function FilterBar({ showGroupBy = false }: { showGroupBy?: boolean }) {
   const items = useWindowedItems();
-  const { search, type, assignee, iterations: selectedIterations, dateFrom, dateTo, groupBy } =
-    useFilters();
-  const { setSearch, setType, setAssignee, setIterations, setDateFrom, setDateTo, setGroupBy, reset } =
-    useFilters();
+  const {
+    search,
+    type,
+    assignee,
+    iterations: selectedIterations,
+    commitments: selectedCommitments,
+    dateFrom,
+    dateTo,
+    groupBy,
+  } = useFilters();
+  const {
+    setSearch,
+    setType,
+    setAssignee,
+    setIterations,
+    setCommitments,
+    setDateFrom,
+    setDateTo,
+    setGroupBy,
+    reset,
+  } = useFilters();
 
   const assignees = useMemo(() => uniqueAssignees(items), [items]);
   const iterationOptions = useMemo(() => uniqueIterations(items), [items]);
+  const commitmentOptions = useMemo(() => uniqueCommitments(items), [items]);
 
   const hasFilters =
-    search || type || assignee || selectedIterations.length || dateFrom || dateTo;
+    search ||
+    type ||
+    assignee ||
+    selectedIterations.length ||
+    selectedCommitments.length ||
+    dateFrom ||
+    dateTo;
 
   return (
     <div className="flex flex-wrap items-center gap-2 px-4 py-2 border-b border-slate-800 bg-slate-900/60">
@@ -52,7 +76,13 @@ export default function FilterBar({ showGroupBy = false }: { showGroupBy?: boole
         options={iterationOptions}
         selected={selectedIterations}
         onChange={setIterations}
-        renderOption={lastPathSegment}
+      />
+
+      <MultiSelect
+        label="Compromiso"
+        options={commitmentOptions}
+        selected={selectedCommitments}
+        onChange={setCommitments}
       />
 
       <div className="flex items-center gap-1" title="Filtra por última actividad (ChangedDate)">

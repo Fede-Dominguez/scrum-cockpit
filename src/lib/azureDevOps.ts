@@ -1,12 +1,18 @@
 // Cliente REST de Azure DevOps.
 // Usa el plugin HTTP de Tauri (las requests salen desde Rust => sin bloqueo CORS).
 import { fetch } from "@tauri-apps/plugin-http";
-import { DEFAULT_LOOKBACK_DAYS, type AzureConfig, type WorkItem } from "../types";
+import { DEFAULT_LOOKBACK_DAYS, type ResolvedProject, type WorkItem } from "../types";
 
 const API_VERSION = "7.1";
 
+/**
+ * Lo que necesita el cliente para consultar: el proyecto con su PAT resuelto
+ * más la ventana de fecha global.
+ */
+export type QueryConfig = ResolvedProject & { lookbackDays?: number; pollIntervalSec?: number };
+
 /** Días de ventana de fecha configurados (o el default), saneado a un entero >= 1 */
-function lookbackDays(cfg: AzureConfig): number {
+function lookbackDays(cfg: QueryConfig): number {
   const n = Math.floor(Number(cfg.lookbackDays));
   return Number.isFinite(n) && n >= 1 ? n : DEFAULT_LOOKBACK_DAYS;
 }
@@ -27,6 +33,8 @@ export const WORK_ITEM_FIELDS = [
   "System.CreatedDate",
   "Microsoft.VSTS.Common.Priority",
   "Microsoft.VSTS.Common.Severity",
+  "Microsoft.VSTS.Common.ClosedBy",
+  "Microsoft.VSTS.Common.ClosedDate",
   "Microsoft.VSTS.Scheduling.StoryPoints",
 ];
 
@@ -39,8 +47,11 @@ export interface CustomFieldRefs {
   sizeEstimate?: string; // "Estimación"
 }
 
-let customFieldCache: CustomFieldRefs | null = null;
-let customFieldKey = "";
+/**
+ * Caché por org/proyecto. Antes era un único slot global: con varios proyectos
+ * abiertos a la vez eso hacía que los campos custom de uno pisaran los del otro.
+ */
+const customFieldCache = new Map<string, CustomFieldRefs>();
 
 /** Quita acentos y pasa a minúscula, para matchear nombres de campo */
 function norm(s: string): string {
@@ -54,42 +65,50 @@ function norm(s: string): string {
  * Descubre los reference names de los campos custom "Compromiso" y "Estimación"
  * consultando la lista de campos del proyecto. Se cachea por org/project.
  */
-export async function resolveCustomFields(cfg: AzureConfig): Promise<CustomFieldRefs> {
+export async function resolveCustomFields(cfg: QueryConfig): Promise<CustomFieldRefs> {
   const key = `${cfg.org}/${cfg.project}`;
-  if (customFieldCache && customFieldKey === key) return customFieldCache;
+  const cached = customFieldCache.get(key);
+  if (cached) return cached;
+  let refs: CustomFieldRefs;
   try {
     const url = `${projectUrl(cfg)}/_apis/wit/fields?api-version=${API_VERSION}`;
     const data = await adoFetch<{ value: { name: string; referenceName: string }[] }>(cfg, url);
     const find = (needle: string) =>
       data.value.find((f) => norm(f.name).includes(needle))?.referenceName;
-    customFieldCache = {
+    refs = {
       commitment: find("comprom"),
       sizeEstimate: find("estimac"),
     };
   } catch {
-    customFieldCache = {};
+    refs = {};
   }
-  customFieldKey = key;
-  return customFieldCache;
+  customFieldCache.set(key, refs);
+  return refs;
 }
 
-/** Tipos de work item que seguimos */
+/** Tipos de work item del board / métricas (los que ofrece el filtro de tipo) */
 export const TRACKED_TYPES = ["User Story", "Bug", "Task"];
+
+/** Tipos que sólo usa la pestaña QA */
+export const QA_TYPES = ["Test Case"];
+
+/** Todo lo que traemos de ADO */
+export const FETCHED_TYPES = [...TRACKED_TYPES, ...QA_TYPES];
 
 function authHeader(pat: string): string {
   // Azure DevOps: Basic con usuario vacío y el PAT como password
   return "Basic " + btoa(":" + pat);
 }
 
-function orgUrl(cfg: AzureConfig): string {
+function orgUrl(cfg: QueryConfig): string {
   return `https://dev.azure.com/${encodeURIComponent(cfg.org)}`;
 }
 
-function projectUrl(cfg: AzureConfig): string {
+function projectUrl(cfg: QueryConfig): string {
   return `${orgUrl(cfg)}/${encodeURIComponent(cfg.project)}`;
 }
 
-async function adoFetch<T>(cfg: AzureConfig, url: string, init?: RequestInit): Promise<T> {
+async function adoFetch<T>(cfg: QueryConfig, url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...init,
     headers: {
@@ -107,10 +126,14 @@ async function adoFetch<T>(cfg: AzureConfig, url: string, init?: RequestInit): P
       /* noop */
     }
     if (res.status === 401 || res.status === 203) {
-      throw new Error("Credenciales inválidas (revisá el PAT y sus permisos).");
+      throw new Error(
+        `Credenciales inválidas para "${cfg.label || cfg.project}" (revisá el PAT de ${cfg.patEnvVar} y sus permisos).`,
+      );
     }
     if (res.status === 404) {
-      throw new Error("No se encontró la organización o el proyecto (revisá los nombres).");
+      throw new Error(
+        `No se encontró la organización o el proyecto "${cfg.org}/${cfg.project}" (revisá los nombres).`,
+      );
     }
     throw new Error(`Azure DevOps respondió ${res.status}. ${detail.slice(0, 200)}`);
   }
@@ -138,10 +161,11 @@ interface WiqlResponse {
   workItems: { id: number }[];
 }
 
+const typeClause = () => FETCHED_TYPES.map((t) => `'${t}'`).join(",");
+
 /** WIQL: IDs de items que cambiaron desde `sinceIso` (o dentro de la ventana de lookback si no se pasa) */
-export async function queryChangedIds(cfg: AzureConfig, sinceIso?: string): Promise<number[]> {
+export async function queryChangedIds(cfg: QueryConfig, sinceIso?: string): Promise<number[]> {
   const url = `${projectUrl(cfg)}/_apis/wit/wiql?api-version=${API_VERSION}`;
-  const typeList = TRACKED_TYPES.map((t) => `'${t}'`).join(",");
   // WIQL compara [System.ChangedDate] con precisión de día: no acepta hora en
   // el literal (responde 400). Usamos sólo la parte de fecha (YYYY-MM-DD); el
   // tick re-trae el día en curso, pero el store deduplica por id.
@@ -152,7 +176,7 @@ export async function queryChangedIds(cfg: AzureConfig, sinceIso?: string): Prom
   const query =
     `SELECT [System.Id] FROM WorkItems ` +
     `WHERE [System.TeamProject] = @project ` +
-    `AND [System.WorkItemType] IN (${typeList}) ` +
+    `AND [System.WorkItemType] IN (${typeClause()}) ` +
     `AND ${dateClause} ` +
     `ORDER BY [System.ChangedDate] DESC`;
   const data = await adoFetch<WiqlResponse>(cfg, url, {
@@ -167,13 +191,12 @@ export async function queryChangedIds(cfg: AzureConfig, sinceIso?: string): Prom
  * ventana de fecha configurada. Limita por ChangedDate para no arrastrar
  * sprints/versiones de años atrás (y evitar el tope de items de la WIQL).
  */
-export async function queryAllIds(cfg: AzureConfig): Promise<number[]> {
+export async function queryAllIds(cfg: QueryConfig): Promise<number[]> {
   const url = `${projectUrl(cfg)}/_apis/wit/wiql?api-version=${API_VERSION}`;
-  const typeList = TRACKED_TYPES.map((t) => `'${t}'`).join(",");
   const query =
     `SELECT [System.Id] FROM WorkItems ` +
     `WHERE [System.TeamProject] = @project ` +
-    `AND [System.WorkItemType] IN (${typeList}) ` +
+    `AND [System.WorkItemType] IN (${typeClause()}) ` +
     `AND [System.State] <> 'Removed' ` +
     `AND [System.ChangedDate] >= @today - ${lookbackDays(cfg)} ` +
     `ORDER BY [System.ChangedDate] DESC`;
@@ -189,11 +212,16 @@ interface RawWorkItem {
   fields: Record<string, unknown>;
 }
 
-function mapWorkItem(raw: RawWorkItem, custom: CustomFieldRefs = {}): WorkItem {
+function mapWorkItem(
+  projectId: string,
+  raw: RawWorkItem,
+  custom: CustomFieldRefs = {},
+): WorkItem {
   const f = raw.fields;
   const tagsRaw = (f["System.Tags"] as string) || "";
   const str = (ref?: string) => (ref ? (f[ref] as string | undefined) : undefined);
   return {
+    projectId,
     id: raw.id,
     type: (f["System.WorkItemType"] as string) || "",
     title: (f["System.Title"] as string) || "(sin título)",
@@ -203,6 +231,8 @@ function mapWorkItem(raw: RawWorkItem, custom: CustomFieldRefs = {}): WorkItem {
     assignedToEmail: personEmail(f["System.AssignedTo"]),
     createdBy: personName(f["System.CreatedBy"]),
     createdByEmail: personEmail(f["System.CreatedBy"]),
+    closedBy: personName(f["Microsoft.VSTS.Common.ClosedBy"]),
+    closedDate: f["Microsoft.VSTS.Common.ClosedDate"] as string | undefined,
     iterationPath: f["System.IterationPath"] as string | undefined,
     areaPath: f["System.AreaPath"] as string | undefined,
     tags: tagsRaw ? tagsRaw.split(";").map((t) => t.trim()).filter(Boolean) : [],
@@ -217,7 +247,7 @@ function mapWorkItem(raw: RawWorkItem, custom: CustomFieldRefs = {}): WorkItem {
 }
 
 /** Trae los work items completos a partir de sus IDs (batch de a 200) */
-export async function getWorkItems(cfg: AzureConfig, ids: number[]): Promise<WorkItem[]> {
+export async function getWorkItems(cfg: QueryConfig, ids: number[]): Promise<WorkItem[]> {
   if (ids.length === 0) return [];
   const url = `${orgUrl(cfg)}/_apis/wit/workitemsbatch?api-version=${API_VERSION}`;
   const custom = await resolveCustomFields(cfg);
@@ -231,7 +261,7 @@ export async function getWorkItems(cfg: AzureConfig, ids: number[]): Promise<Wor
       method: "POST",
       body: JSON.stringify({ ids: chunk, fields }),
     });
-    for (const raw of data.value) result.push(mapWorkItem(raw, custom));
+    for (const raw of data.value) result.push(mapWorkItem(cfg.id, raw, custom));
   }
   return result;
 }
@@ -246,7 +276,7 @@ export interface WorkItemUpdate {
 
 /** Historial de cambios (updates) de un work item */
 export async function getWorkItemUpdates(
-  cfg: AzureConfig,
+  cfg: QueryConfig,
   id: number,
 ): Promise<WorkItemUpdate[]> {
   const url = `${projectUrl(cfg)}/_apis/wit/workItems/${id}/updates?api-version=${API_VERSION}`;
@@ -274,7 +304,7 @@ interface RawComment {
  * El endpoint de comentarios sigue en preview (api-version 7.1-preview.4).
  */
 export async function getWorkItemComments(
-  cfg: AzureConfig,
+  cfg: QueryConfig,
   id: number,
 ): Promise<WorkItemComment[]> {
   const url = `${projectUrl(cfg)}/_apis/wit/workItems/${id}/comments?api-version=7.1-preview.4&$top=200`;
@@ -292,7 +322,7 @@ export async function getWorkItemComments(
 }
 
 /** Prueba de conexión: devuelve la cantidad de items visibles */
-export async function testConnection(cfg: AzureConfig): Promise<number> {
+export async function testConnection(cfg: QueryConfig): Promise<number> {
   const ids = await queryChangedIds(cfg);
   return ids.length;
 }
@@ -305,7 +335,7 @@ export interface Iteration {
   attributes?: { startDate?: string; finishDate?: string; timeFrame?: string };
 }
 
-export async function getIterations(cfg: AzureConfig): Promise<Iteration[]> {
+export async function getIterations(cfg: QueryConfig): Promise<Iteration[]> {
   const team = cfg.team?.trim();
   const teamSegment = team ? `/${encodeURIComponent(team)}` : "";
   const url = `${projectUrl(cfg)}${teamSegment}/_apis/work/teamsettings/iterations?api-version=${API_VERSION}`;
@@ -337,7 +367,7 @@ interface ClassificationNode {
  * IterationPath tal cual aparece en los work items (nombres unidos por "\").
  */
 export async function getAllIterationDates(
-  cfg: AzureConfig,
+  cfg: QueryConfig,
 ): Promise<Record<string, IterationDates>> {
   const url = `${projectUrl(cfg)}/_apis/wit/classificationnodes/iterations?$depth=10&api-version=${API_VERSION}`;
   const out: Record<string, IterationDates> = {};

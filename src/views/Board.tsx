@@ -1,12 +1,12 @@
 import { useMemo } from "react";
-import { useStore } from "../store/useStore";
 import { useFilters } from "../store/useFilters";
-import { applyFilters } from "../lib/selectors";
-import { useWindowedItems } from "../lib/useWindowedItems";
+import { applyFilters, sprintName } from "../lib/selectors";
+import { useSizePoints, useWindowedItems } from "../lib/useWindowedItems";
 import { Avatar, TypeBadge } from "../components/common";
-import { lastPathSegment } from "../lib/format";
+import { itemPoints } from "../lib/points";
 import FilterBar from "../components/FilterBar";
-import type { WorkItem } from "../types";
+import ProjectBadge from "../components/ProjectBadge";
+import { itemKey, type WorkItem } from "../types";
 
 // Orden sugerido de columnas típicas de un board
 const COLUMN_ORDER = ["New", "Approved", "Committed", "To Do", "Doing", "In Progress", "Active", "Done", "Resolved", "Closed"];
@@ -30,7 +30,6 @@ function sortColumns(keys: string[]): string[] {
 }
 
 export default function Board() {
-  const itemsMap = useStore((s) => s.items);
   const windowed = useWindowedItems();
   const filters = useFilters();
 
@@ -48,7 +47,9 @@ export default function Board() {
     return sortColumns([...groups.keys()]).map((k) => ({ key: k, items: groups.get(k)! }));
   }, [windowed, filters]);
 
-  const total = useMemo(() => Object.keys(itemsMap).length, [itemsMap]);
+  // Cuántos items hay realmente cargados en los proyectos visibles: es lo que
+  // distingue "no cargó nada" de "los filtros no dejan pasar nada".
+  const total = windowed.length;
 
   return (
     <div className="flex flex-col h-full">
@@ -69,7 +70,9 @@ export default function Board() {
 }
 
 function Column({ title, items }: { title: string; items: WorkItem[] }) {
-  const points = items.reduce((s, it) => s + (it.storyPoints ?? 0), 0);
+  const sizePoints = useSizePoints();
+  const points =
+    Math.round(items.reduce((s, it) => s + itemPoints(it, sizePoints), 0) * 100) / 100;
   return (
     <div className="flex flex-col w-72 shrink-0 bg-slate-900/50 rounded-xl border border-slate-800 h-full">
       <div className="flex items-center justify-between px-3 py-2 border-b border-slate-800">
@@ -81,7 +84,7 @@ function Column({ title, items }: { title: string; items: WorkItem[] }) {
       </div>
       <div className="flex-1 overflow-y-auto p-2 space-y-2">
         {items.map((it) => (
-          <Card key={it.id} item={it} />
+          <Card key={itemKey(it.projectId, it.id)} item={it} />
         ))}
       </div>
     </div>
@@ -89,14 +92,20 @@ function Column({ title, items }: { title: string; items: WorkItem[] }) {
 }
 
 function Card({ item }: { item: WorkItem }) {
+  const sizePoints = useSizePoints();
+  const pts = itemPoints(item, sizePoints);
   return (
     <div className="bg-slate-800/80 hover:bg-slate-800 rounded-lg p-2.5 border border-slate-700/60 transition-colors">
       <div className="flex items-center gap-2 mb-1.5">
+        <ProjectBadge projectId={item.projectId} />
         <TypeBadge type={item.type} />
         <span className="text-xs text-slate-500">#{item.id}</span>
-        {item.storyPoints != null && (
-          <span className="ml-auto text-xs font-semibold text-slate-400 bg-slate-700/60 rounded px-1.5">
-            {item.storyPoints}
+        {pts > 0 && (
+          <span
+            className="ml-auto text-xs font-semibold text-slate-400 bg-slate-700/60 rounded px-1.5"
+            title={item.storyPoints != null ? "Story Points" : `Estimación: ${item.sizeEstimate}`}
+          >
+            {pts}
           </span>
         )}
       </div>
@@ -106,7 +115,7 @@ function Card({ item }: { item: WorkItem }) {
         <span className="text-xs text-slate-400 truncate">{item.assignedTo ?? "Sin asignar"}</span>
         {item.iterationPath && (
           <span className="ml-auto text-[10px] text-slate-500 truncate max-w-24">
-            {lastPathSegment(item.iterationPath)}
+            {sprintName(item)}
           </span>
         )}
       </div>

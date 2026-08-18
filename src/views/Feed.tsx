@@ -1,15 +1,19 @@
 import { useMemo, useState } from "react";
-import { resolveConfig, useStore } from "../store/useStore";
+import { resolveProject, useStore } from "../store/useStore";
 import { UNASSIGNED, useFilters } from "../store/useFilters";
 import { useWindowedIds } from "../lib/useWindowedItems";
 import { Avatar, TypeBadge } from "../components/common";
 import { htmlToText, relativeTime, shortTime } from "../lib/format";
 import { getWorkItemComments, type WorkItemComment } from "../lib/azureDevOps";
 import FilterBar from "../components/FilterBar";
-import type { FeedEvent, FeedEventKind } from "../types";
+import ProjectBadge from "../components/ProjectBadge";
+import { sprintName } from "../lib/selectors";
+import { commitmentLevel } from "../lib/workItemStatus";
+import { itemKey, type FeedEvent, type FeedEventKind } from "../types";
 
-// Cache de comentarios por work item, para no re-pedirlos al re-expandir.
-const commentCache = new Map<number, WorkItemComment[]>();
+// Cache de comentarios por work item (clave `${projectId}#${id}`, porque los
+// ids de ADO se repiten entre organizaciones), para no re-pedirlos al re-expandir.
+const commentCache = new Map<string, WorkItemComment[]>();
 
 const KIND_ICON: Record<FeedEventKind, string> = {
   created: "✨",
@@ -36,12 +40,16 @@ export default function Feed() {
   const filtered = useMemo(() => {
     const q = filters.search.trim().toLowerCase();
     const iterationSet = filters.iterations.length ? new Set(filters.iterations) : null;
+    const commitmentSet = filters.commitments.length ? new Set(filters.commitments) : null;
     return feed.filter((ev) => {
       if (filters.type && ev.workItemType !== filters.type) return false;
-      const item = itemsMap[ev.workItemId];
-      // Si el item está cargado pero su sprint quedó fuera de la ventana, ocultar.
-      if (item && !windowedIds.has(item.id)) return false;
-      if (iterationSet && (!item?.iterationPath || !iterationSet.has(item.iterationPath)))
+      const key = itemKey(ev.projectId, ev.workItemId);
+      const item = itemsMap[key];
+      // Si el item está cargado pero su sprint quedó fuera de la ventana (o su
+      // proyecto no está activo), ocultar.
+      if (item && !windowedIds.has(key)) return false;
+      if (iterationSet && !(item && iterationSet.has(sprintName(item)))) return false;
+      if (commitmentSet && !(item && commitmentSet.has(commitmentLevel(item.commitment))))
         return false;
       if (filters.assignee) {
         if (filters.assignee === UNASSIGNED) {
@@ -94,12 +102,14 @@ export default function Feed() {
 }
 
 function EventRow({ ev }: { ev: FeedEvent }) {
-  const config = useStore((s) => s.config);
-  const envPat = useStore((s) => s.envPat);
+  const projects = useStore((s) => s.config.projects);
+  const lookbackDays = useStore((s) => s.config.lookbackDays);
+  const envPats = useStore((s) => s.envPats);
+  const cacheKey = itemKey(ev.projectId, ev.workItemId);
 
   const [expanded, setExpanded] = useState(false);
   const [comments, setComments] = useState<WorkItemComment[] | null>(
-    () => commentCache.get(ev.workItemId) ?? null,
+    () => commentCache.get(cacheKey) ?? null,
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -108,16 +118,18 @@ function EventRow({ ev }: { ev: FeedEvent }) {
     const next = !expanded;
     setExpanded(next);
     if (next && comments === null && !loading) {
-      const cfg = resolveConfig(config, envPat);
-      if (!cfg || !cfg.pat) {
-        setError("Sin configuración para traer comentarios.");
+      // Los comentarios se piden con el token del proyecto dueño del item.
+      const project = projects.find((p) => p.id === ev.projectId);
+      const resolved = project ? resolveProject(project, envPats) : null;
+      if (!resolved) {
+        setError("Sin configuración para traer comentarios de este proyecto.");
         return;
       }
       setLoading(true);
       setError(null);
       try {
-        const list = await getWorkItemComments(cfg, ev.workItemId);
-        commentCache.set(ev.workItemId, list);
+        const list = await getWorkItemComments({ ...resolved, lookbackDays }, ev.workItemId);
+        commentCache.set(cacheKey, list);
         setComments(list);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -144,7 +156,10 @@ function EventRow({ ev }: { ev: FeedEvent }) {
           <p className="text-xs text-slate-500 mt-1 truncate">{ev.title}</p>
         </div>
         <div className="flex flex-col items-end gap-1 shrink-0">
-          <TypeBadge type={ev.workItemType} />
+          <div className="flex items-center gap-1">
+            <ProjectBadge projectId={ev.projectId} />
+            <TypeBadge type={ev.workItemType} />
+          </div>
           <span
             className="text-xs text-slate-500"
             title={new Date(ev.timestamp).toLocaleString("es-AR")}
